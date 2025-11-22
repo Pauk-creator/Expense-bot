@@ -100,7 +100,7 @@ def category_menu():
     menu = "Choose category:\n"
     for k, v in categories.items():
         menu += f"{k}. {v}\n"
-    menu += "5. Exit"
+    menu += "10. Exit"  # Exit option only here
     return menu
 
 # ---------------- WEBHOOK ----------------
@@ -151,7 +151,11 @@ async def whatsapp_webhook(request: Request):
 
     # ---------------- CATEGORY SELECTION ----------------
     elif state == "AWAIT_CATEGORY":
-        if message not in categories:
+        if message == "10":  # Exit from category selection
+            user_state[sender] = "MAIN_MENU"
+            resp.message(main_menu())
+            return Response(content=str(resp), media_type="application/xml")
+        elif message not in categories:
             resp.message(category_menu())
             return Response(content=str(resp), media_type="application/xml")
         user_temp[sender] = {"category": categories[message]}
@@ -161,6 +165,10 @@ async def whatsapp_webhook(request: Request):
 
     # ---------------- AMOUNT ENTRY ----------------
     elif state == "AWAIT_AMOUNT":
+        if message.lower() in ["exit"]:
+            user_state[sender] = "MAIN_MENU"
+            resp.message(main_menu())
+            return Response(content=str(resp), media_type="application/xml")
         try:
             amount = float(message)
         except ValueError:
@@ -168,11 +176,15 @@ async def whatsapp_webhook(request: Request):
             return Response(content=str(resp), media_type="application/xml")
         user_temp[sender]["amount"] = amount
         user_state[sender] = "AWAIT_NOTES"
-        resp.message("Enter a note or comment (or type '-' for none, 'Exit' to cancel):")
+        resp.message("Enter a note or comment (or type '-' for none):")
         return Response(content=str(resp), media_type="application/xml")
 
     # ---------------- NOTES ENTRY ----------------
     elif state == "AWAIT_NOTES":
+        if message.lower() in ["exit"]:
+            user_state[sender] = "MAIN_MENU"
+            resp.message(main_menu())
+            return Response(content=str(resp), media_type="application/xml")
         notes = message if message != "-" else ""
         category = user_temp[sender]["category"]
         amount = user_temp[sender]["amount"]
