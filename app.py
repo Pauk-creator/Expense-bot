@@ -1,20 +1,33 @@
 import os
+import json
 import datetime
 from fastapi import FastAPI, Request, Response
 from dotenv import load_dotenv
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 import gspread
+from google.oauth2.service_account import Credentials
 
+# ---------------- LOAD ENVIRONMENT VARIABLES ----------------
 load_dotenv()
 
+# ---------------- FASTAPI APP ----------------
 app = FastAPI()
 
 # ---------------- GOOGLE SHEETS SETUP ----------------
 SERVICE_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
-gc = gspread.service_account(filename=SERVICE_JSON)
+if not SERVICE_JSON or not SHEET_ID:
+    raise ValueError("Please set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_SHEET_ID in your environment variables.")
+
+creds_dict = json.loads(SERVICE_JSON)
+creds = Credentials.from_service_account_info(
+    creds_dict,
+    scopes=["https://www.googleapis.com/auth/spreadsheets"]
+)
+
+gc = gspread.authorize(creds)
 sheet = gc.open_by_key(SHEET_ID).sheet1
 
 # ---------------- TWILIO SETUP ----------------
@@ -23,6 +36,9 @@ twilio_client = Client(
     os.getenv("TWILIO_AUTH_TOKEN")
 )
 TWILIO_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
+
+if not TWILIO_NUMBER:
+    raise ValueError("Please set TWILIO_WHATSAPP_NUMBER in your environment variables.")
 
 # ---------------- USER STATE MEMORY ----------------
 user_state = {}
@@ -43,12 +59,11 @@ def main_menu():
 # ---------------- SAVE EXPENSE ----------------
 def save_expense(sender, category, amount, notes):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    phone = sender
-    sheet.append_row([timestamp, phone, category, amount, notes])
+    sheet.append_row([timestamp, sender, category, amount, notes])
 
 # ---------------- TOTAL CALCULATIONS ----------------
 def calculate_total(sender, days=None):
-    rows = sheet.get_all_values()[1:]
+    rows = sheet.get_all_values()[1:]  # Skip header
     total = 0
     now = datetime.datetime.now()
 
@@ -60,10 +75,13 @@ def calculate_total(sender, days=None):
 
         row_time = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M")
 
-        if days and (now - row_time).days >= days:
+        if days is not None and (now - row_time).days >= days:
             continue
 
-        total += float(amount)
+        try:
+            total += float(amount)
+        except ValueError:
+            continue  # Skip invalid amounts
 
     return total
 
@@ -76,6 +94,7 @@ async def whatsapp_webhook(request: Request):
 
     resp = MessagingResponse()
 
+    # Initialize user state
     if sender not in user_state:
         user_state[sender] = "MAIN_MENU"
 
@@ -111,7 +130,8 @@ async def whatsapp_webhook(request: Request):
             resp.message(f"All-time total spending: {total}")
 
         elif message == "5":
-            resp.message("Thank you for using Expense Tracker.")
+            resp.message("Thank you for using Expense Tracker. Goodbye!")
+
         else:
             resp.message(main_menu())
 
@@ -155,7 +175,7 @@ async def whatsapp_webhook(request: Request):
     elif state == "AWAIT_AMOUNT":
         try:
             amount = float(message)
-        except:
+        except ValueError:
             resp.message("Invalid amount. Enter a number:")
             return Response(content=str(resp), media_type="application/xml")
 
@@ -167,12 +187,12 @@ async def whatsapp_webhook(request: Request):
     # ---------------- NOTES ENTRY ----------------
     elif state == "AWAIT_NOTES":
         notes = message if message != "-" else ""
-
         category = user_temp[sender]["category"]
         amount = user_temp[sender]["amount"]
 
         save_expense(sender, category, amount, notes)
 
+        # Reset state
         user_state[sender] = "MAIN_MENU"
         user_temp.pop(sender, None)
 
