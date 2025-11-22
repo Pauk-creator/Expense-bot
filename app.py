@@ -138,16 +138,13 @@ async def whatsapp_webhook(request: Request):
             resp.message(category_menu())
         elif message == "2":
             total = calculate_total(sender, days=1)
-            resp.message(f"Today's total spending: {total}")
-            resp.message(main_menu())  # separate message for menu
+            resp.message(f"Today's total spending: {total}\n\n{main_menu()}")
         elif message == "3":
             total = calculate_total(sender, days=7)
-            resp.message(f"This week's total spending: {total}")
-            resp.message(main_menu())  # separate message for menu
+            resp.message(f"This week's total spending: {total}\n\n{main_menu()}")
         elif message == "4":
             total = calculate_total(sender)
-            resp.message(f"All-time total spending: {total}")
-            resp.message(main_menu())  # separate message for menu
+            resp.message(f"All-time total spending: {total}\n\n{main_menu()}")
         else:
             resp.message(main_menu(show_welcome))
         return Response(content=str(resp), media_type="application/xml")
@@ -180,19 +177,43 @@ async def whatsapp_webhook(request: Request):
         category = user_temp[sender]["category"]
         amount = user_temp[sender]["amount"]
         save_expense(sender, category, amount, notes)
-        user_state[sender] = "MAIN_MENU"
+
+        # Switch to NEXT_ACTION state
+        user_state[sender] = "NEXT_ACTION"
         user_temp.pop(sender, None)
         resp.message(
-            f"Expense saved.\nYou spent {amount} on {category}."
-        )
-        # Next menu options
-        resp.message(
+            f"Expense saved.\nYou spent {amount} on {category}.\n\n"
             "What would you like to do next:\n"
             "1. Add Another Expense\n"
             "2. View Today Total\n"
             "3. Main Menu\n"
             "5. Exit"
         )
+        return Response(content=str(resp), media_type="application/xml")
+
+    # ---------------- NEXT ACTION MENU ----------------
+    elif state == "NEXT_ACTION":
+        if message == "1":
+            user_state[sender] = "AWAIT_CATEGORY"
+            resp.message(category_menu())
+        elif message == "2":
+            total = calculate_total(sender, days=1)
+            resp.message(f"Today's total spending: {total}\n\n{main_menu()}")
+            user_state[sender] = "MAIN_MENU"
+        elif message == "3":
+            resp.message(main_menu())
+            user_state[sender] = "MAIN_MENU"
+        elif message.lower() in ["5", "exit"]:
+            resp.message("Thank you for using Expense Tracker. Goodbye!")
+            user_state[sender] = "MAIN_MENU"
+        else:
+            resp.message(
+                "Invalid choice. What would you like to do next?\n"
+                "1. Add Another Expense\n"
+                "2. View Today Total\n"
+                "3. Main Menu\n"
+                "5. Exit"
+            )
         return Response(content=str(resp), media_type="application/xml")
 
     # ---------------- FALLBACK ----------------
