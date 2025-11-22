@@ -43,18 +43,22 @@ if not TWILIO_NUMBER:
 # ---------------- USER STATE MEMORY ----------------
 user_state = {}
 user_temp = {}
+user_seen_welcome = set()  # Track users who already got welcome
 
 # ---------------- MAIN MENU MESSAGE ----------------
-def main_menu():
-    return (
-        "Welcome to the Expense Tracker Bot\n"
-        "Please choose an option:\n\n"
+def main_menu(show_welcome=False):
+    message = ""
+    if show_welcome:
+        message += "Welcome to the Expense Tracker Bot\n"
+    message += (
+        "Please choose an option:\n"
         "1. Add Expense\n"
         "2. View Today Total\n"
         "3. View This Week Total\n"
         "4. View All-Time Total\n"
         "5. Exit"
     )
+    return message
 
 # ---------------- SAVE EXPENSE ----------------
 def save_expense(sender, category, amount, notes):
@@ -66,24 +70,38 @@ def calculate_total(sender, days=None):
     rows = sheet.get_all_values()[1:]  # Skip header
     total = 0
     now = datetime.datetime.now()
-
     for row in rows:
         timestamp, phone, category, amount, notes = row
-
         if phone != sender:
             continue
-
         row_time = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M")
-
         if days is not None and (now - row_time).days >= days:
             continue
-
         try:
             total += float(amount)
         except ValueError:
-            continue  # Skip invalid amounts
-
+            continue
     return total
+
+# ---------------- CATEGORY MAPPING ----------------
+categories = {
+    "1": "Accommodation",
+    "2": "Meals & Catering",
+    "3": "Transport (Flights, Car Rental, Local Taxis)",
+    "4": "Venue Hire",
+    "5": "Vendor Payments",
+    "6": "Staff Hires (Temporary & Permanent)",
+    "7": "Security & Logistics",
+    "8": "Printing",
+    "9": "Other"
+}
+
+def category_menu():
+    menu = "Choose category:\n"
+    for k, v in categories.items():
+        menu += f"{k}. {v}\n"
+    menu += "5. Exit"
+    return menu
 
 # ---------------- WEBHOOK ----------------
 @app.post("/whatsapp")
@@ -94,81 +112,51 @@ async def whatsapp_webhook(request: Request):
 
     resp = MessagingResponse()
 
-    # Initialize user state
+    # Show welcome only once per user
+    show_welcome = False
+    if sender not in user_seen_welcome:
+        show_welcome = True
+        user_seen_welcome.add(sender)
+
+    # Initialize state
     if sender not in user_state:
         user_state[sender] = "MAIN_MENU"
 
     state = user_state[sender]
 
+    # ---------------- EXIT HANDLING ----------------
+    if message.lower() in ["5", "exit"]:
+        user_state[sender] = "MAIN_MENU"
+        user_temp.pop(sender, None)
+        resp.message("Thank you for using Expense Tracker. Goodbye!")
+        return Response(content=str(resp), media_type="application/xml")
+
     # ---------------- MAIN MENU ----------------
     if state == "MAIN_MENU":
         if message == "1":
             user_state[sender] = "AWAIT_CATEGORY"
-            resp.message(
-                "Choose category:\n"
-                "1. Accommodation\n"
-                "2. Meals & Catering\n"
-                "3. Transport (Flights, Car Rental, Local Taxis)\n"
-                "4. Venue Hire\n"
-                "5. Vendor Payments\n"
-                "6. Staff Hires (Temporary & Permanent)\n"
-                "7. Security & Logistics\n"
-                "8. Printing\n"
-                "9. Other"
-            )
-
+            resp.message(category_menu())
         elif message == "2":
             total = calculate_total(sender, days=1)
-            resp.message(f"Today's total spending: {total}")
-
+            resp.message(f"Today's total spending: {total}\n\n{main_menu()}")
         elif message == "3":
             total = calculate_total(sender, days=7)
-            resp.message(f"This week's total spending: {total}")
-
+            resp.message(f"This week's total spending: {total}\n\n{main_menu()}")
         elif message == "4":
             total = calculate_total(sender)
-            resp.message(f"All-time total spending: {total}")
-
-        elif message == "5":
-            resp.message("Thank you for using Expense Tracker. Goodbye!")
-
+            resp.message(f"All-time total spending: {total}\n\n{main_menu()}")
         else:
-            resp.message(main_menu())
-
+            resp.message(main_menu(show_welcome))
         return Response(content=str(resp), media_type="application/xml")
 
     # ---------------- CATEGORY SELECTION ----------------
     elif state == "AWAIT_CATEGORY":
-        categories = {
-            "1": "Accommodation",
-            "2": "Meals & Catering",
-            "3": "Transport (Flights, Car Rental, Local Taxis)",
-            "4": "Venue Hire",
-            "5": "Vendor Payments",
-            "6": "Staff Hires (Temporary & Permanent)",
-            "7": "Security & Logistics",
-            "8": "Printing",
-            "9": "Other"
-        }
-
         if message not in categories:
-            resp.message(
-                "Invalid choice. Choose category:\n"
-                "1. Accommodation\n"
-                "2. Meals & Catering\n"
-                "3. Transport (Flights, Car Rental, Local Taxis)\n"
-                "4. Venue Hire\n"
-                "5. Vendor Payments\n"
-                "6. Staff Hires\n"
-                "7. Security & Logistics\n"
-                "8. Printing\n"
-                "9. Other"
-            )
+            resp.message(category_menu())
             return Response(content=str(resp), media_type="application/xml")
-
         user_temp[sender] = {"category": categories[message]}
         user_state[sender] = "AWAIT_AMOUNT"
-        resp.message(f"Enter the amount spent on {categories[message]}:")
+        resp.message(f"Enter the amount spent on {categories[message]} (or type 'Exit' to cancel):")
         return Response(content=str(resp), media_type="application/xml")
 
     # ---------------- AMOUNT ENTRY ----------------
@@ -176,12 +164,11 @@ async def whatsapp_webhook(request: Request):
         try:
             amount = float(message)
         except ValueError:
-            resp.message("Invalid amount. Enter a number:")
+            resp.message("Invalid amount. Enter a number (or type 'Exit' to cancel):")
             return Response(content=str(resp), media_type="application/xml")
-
         user_temp[sender]["amount"] = amount
         user_state[sender] = "AWAIT_NOTES"
-        resp.message("Enter a note or comment (or type '-' for none):")
+        resp.message("Enter a note or comment (or type '-' for none, 'Exit' to cancel):")
         return Response(content=str(resp), media_type="application/xml")
 
     # ---------------- NOTES ENTRY ----------------
@@ -189,19 +176,16 @@ async def whatsapp_webhook(request: Request):
         notes = message if message != "-" else ""
         category = user_temp[sender]["category"]
         amount = user_temp[sender]["amount"]
-
         save_expense(sender, category, amount, notes)
-
-        # Reset state
         user_state[sender] = "MAIN_MENU"
         user_temp.pop(sender, None)
-
         resp.message(
             f"Expense saved.\nYou spent {amount} on {category}.\n\n"
             "What would you like to do next:\n"
             "1. Add Another Expense\n"
             "2. View Today Total\n"
-            "3. Main Menu"
+            "3. Main Menu\n"
+            "5. Exit"
         )
         return Response(content=str(resp), media_type="application/xml")
 
