@@ -138,13 +138,16 @@ async def whatsapp_webhook(request: Request):
             resp.message(category_menu())
         elif message == "2":
             total = calculate_total(sender, days=1)
-            resp.message(f"Today's total spending: {total}\n\n{main_menu()}")
+            resp.message(f"Today's total spending: {total}")
+            resp.message(main_menu())  # separate message for menu
         elif message == "3":
             total = calculate_total(sender, days=7)
-            resp.message(f"This week's total spending: {total}\n\n{main_menu()}")
+            resp.message(f"This week's total spending: {total}")
+            resp.message(main_menu())  # separate message for menu
         elif message == "4":
             total = calculate_total(sender)
-            resp.message(f"All-time total spending: {total}\n\n{main_menu()}")
+            resp.message(f"All-time total spending: {total}")
+            resp.message(main_menu())  # separate message for menu
         else:
             resp.message(main_menu(show_welcome))
         return Response(content=str(resp), media_type="application/xml")
@@ -180,7 +183,10 @@ async def whatsapp_webhook(request: Request):
         user_state[sender] = "MAIN_MENU"
         user_temp.pop(sender, None)
         resp.message(
-            f"Expense saved.\nYou spent {amount} on {category}.\n\n"
+            f"Expense saved.\nYou spent {amount} on {category}."
+        )
+        # Next menu options
+        resp.message(
             "What would you like to do next:\n"
             "1. Add Another Expense\n"
             "2. View Today Total\n"
