@@ -274,3 +274,8 @@ async def whatsapp_webhook(request: Request):
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Expense bot running"}
+
+@app.head("/")
+async def health_head():
+    return Response(status_code=200)
+
