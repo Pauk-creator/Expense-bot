@@ -21,10 +21,25 @@ SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 if not SERVICE_JSON or not SHEET_ID:
     raise ValueError("Please set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_SHEET_ID in your environment variables.")
 
-creds_dict = json.loads(SERVICE_JSON)
+# SERVICE_JSON may be either:
+#  - the full credentials JSON string (inline), OR
+#  - a path to a JSON file on disk.
+try:
+    # detect if SERVICE_JSON looks like JSON text
+    s = SERVICE_JSON.strip()
+    if s.startswith("{"):
+        creds_dict = json.loads(s)
+    else:
+        # treat as a file path
+        with open(SERVICE_JSON, "r", encoding="utf-8") as f:
+            creds_dict = json.load(f)
+except Exception as e:
+    raise ValueError("Failed to load service account credentials. Make sure GOOGLE_SERVICE_ACCOUNT_JSON "
+                     "is either the JSON content or a path to the JSON file. Error: " + str(e))
+
 creds = Credentials.from_service_account_info(
     creds_dict,
-    scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 )
 
 gc = gspread.authorize(creds)
@@ -63,25 +78,40 @@ def main_menu(show_welcome=False):
 # ---------------- SAVE EXPENSE ----------------
 def save_expense(sender, category, amount, notes):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Sheet columns: Timestamp | PhoneNumber | Category | Amount | Notes
     sheet.append_row([timestamp, sender, category, amount, notes])
 
 # ---------------- TOTAL CALCULATIONS ----------------
 def calculate_total(sender, days=None):
     rows = sheet.get_all_values()[1:]  # Skip header
-    total = 0
+    total = 0.0
     now = datetime.datetime.now()
     for row in rows:
-        timestamp, phone, category, amount, notes = row
+        # be defensive: row may have extra columns or fewer columns
+        if len(row) < 4:
+            continue
+        # map columns by position
+        timestamp = row[0]
+        phone = row[1]
+        # category = row[2]  # not used here
+        amount_str = row[3]
         if phone != sender:
             continue
-        row_time = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M")
-        if days is not None and (now - row_time).days >= days:
-            continue
+        # parse timestamp
         try:
-            total += float(amount)
-        except ValueError:
+            row_time = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M")
+        except Exception:
+            # if parsing fails, skip row
             continue
-    return total
+        if days is not None:
+            # include entries whose age in days is < days
+            if (now - row_time).days >= days:
+                continue
+        try:
+            total += float(amount_str)
+        except Exception:
+            continue
+    return round(total, 2)
 
 # ---------------- CATEGORY MAPPING ----------------
 categories = {
@@ -125,7 +155,8 @@ async def whatsapp_webhook(request: Request):
     state = user_state[sender]
 
     # ---------------- EXIT HANDLING ----------------
-    if message.lower() in ["5", "exit"]:
+    # Only treat "5"/"exit" as global exit when user is at MAIN_MENU or NEXT_ACTION
+    if state in ["MAIN_MENU", "NEXT_ACTION"] and message.lower() in ["5", "exit"]:
         user_state[sender] = "MAIN_MENU"
         user_temp.pop(sender, None)
         resp.message("Thank you for using Expense Tracker. Goodbye!")
@@ -156,6 +187,7 @@ async def whatsapp_webhook(request: Request):
             resp.message(main_menu())
             return Response(content=str(resp), media_type="application/xml")
         elif message not in categories:
+            # show category menu again
             resp.message(category_menu())
             return Response(content=str(resp), media_type="application/xml")
         user_temp[sender] = {"category": categories[message]}
@@ -174,6 +206,9 @@ async def whatsapp_webhook(request: Request):
         except ValueError:
             resp.message("Invalid amount. Enter a number (or type 'Exit' to cancel):")
             return Response(content=str(resp), media_type="application/xml")
+        # store amount then ask notes
+        if sender not in user_temp:
+            user_temp[sender] = {}
         user_temp[sender]["amount"] = amount
         user_state[sender] = "AWAIT_NOTES"
         resp.message("Enter a note or comment (or type '-' for none):")
@@ -186,8 +221,10 @@ async def whatsapp_webhook(request: Request):
             resp.message(main_menu())
             return Response(content=str(resp), media_type="application/xml")
         notes = message if message != "-" else ""
-        category = user_temp[sender]["category"]
-        amount = user_temp[sender]["amount"]
+        # defensive access
+        temp = user_temp.get(sender, {})
+        category = temp.get("category", "Other")
+        amount = temp.get("amount", 0.0)
         save_expense(sender, category, amount, notes)
 
         # Switch to NEXT_ACTION state
@@ -233,3 +270,7 @@ async def whatsapp_webhook(request: Request):
         user_state[sender] = "MAIN_MENU"
         resp.message(main_menu())
         return Response(content=str(resp), media_type="application/xml")
+
+@app.get("/")
+def health_check():
+    return {"status": "ok", "message": "Expense bot running"}
